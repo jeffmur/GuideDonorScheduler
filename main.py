@@ -255,7 +255,7 @@ def insert_extra_sequence(candidate_dna, guide):
     return first + guide + second + candidate_dna + third
 
 
-def perform_mutation(candidate_dna, first_amino_acid_loc, pam_case, mutant, null_mutation_loc, decision_path, keep_trying=False, distance_from_pam=0,
+def perform_mutation(candidate_dna, first_amino_acid_loc, pam_case, mutant, decision_path, keep_trying=False, distance_from_pam=0,
                      mutation_location=-1, complement=False, down=False):
 
     #global amino_acid_number
@@ -270,18 +270,10 @@ def perform_mutation(candidate_dna, first_amino_acid_loc, pam_case, mutant, null
     # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     # Only to handle Issue 25 case
     if (actual_mutation[0] == 'NULL' and actual_mutation[1] == 'NULL'):
-
-        if not complement and (null_mutation_loc > 0 and null_mutation_loc < 69): # Make sure we only go 7 bases upstream from PAM
-            decision_path += "We weren't able to mutate in the seed region. "
-            return False, None, None, actual_mutation, decision_path
-        elif complement and (null_mutation_loc > 0 and null_mutation_loc > 84):
-            decision_path += "We weren't able to mutate in the seed region. "
+        if distance_from_pam > 7: # Reached the limit of seed so don't continue going upstream
             return False, None, None, actual_mutation, decision_path
 
-        mutation_string = candidate_dna[null_mutation_loc:null_mutation_loc + 3]
-
-        if complement:
-            mutation_string = invert_dna(mutation_string)
+        mutation_string = candidate_dna[first_amino_acid_loc:first_amino_acid_loc + 3]
 
         if mutation_string not in string_to_acid:
             return False, None, None, actual_mutation, decision_path
@@ -289,36 +281,19 @@ def perform_mutation(candidate_dna, first_amino_acid_loc, pam_case, mutant, null
         pam_acid = string_to_acid[mutation_string]
         valid_mutations = codons[pam_acid]  # get a list of valid mutations
         for mutation in valid_mutations:
-            if mutation != mutation_string: # We can make silent mutation
-                # Check if mutation will distrupt the PAM
-                if complement:
-                    distance_from_pam = null_mutation_loc - 76
-                else :
-                    distance_from_pam = 76 - null_mutation_loc
-
-                if distance_from_pam == 2: # GG at the end of the acid will not change so move further upstream
-                    decision_path += "Mutating " + mutation_string + " to " + mutation + " will not distrupt the seed/PAM, so move further upstream. "
-
-                    if complement:
-                        return perform_mutation(candidate_dna, -1, -1, mutant, null_mutation_loc + 1, decision_path,
-                                            complement=complement)
-                    else:
-                        return perform_mutation(candidate_dna, -1, -1, mutant, null_mutation_loc - 1, decision_path,
-                                                complement=complement)
-
+            if distance_from_pam == 2: # GG at the end of the acid will not change so move further upstream
+                return perform_mutation(candidate_dna, first_amino_acid_loc - 1, -1, mutant, decision_path,
+                                        distance_from_pam=distance_from_pam + 1, complement=complement)
+            elif mutation != mutation_string: # We can make silent mutation
                 candidate_dna = candidate_dna.replace(mutation_string, mutation)
                 decision_path += "Mutated " + mutation_string + " to " + mutation + ", mutation in the seed was successful. "
                 return True, candidate_dna, distance_from_pam, actual_mutation, decision_path
-            elif mutation == mutation_string and len(valid_mutations) == 1: # PAM we're going to mutate is same as the one we're mutating from
+            elif mutation == mutation_string and len(valid_mutations) == 1:  # PAM we're going to mutate is same as the one we're mutating from
                 # Example: Mutating 'TGG' to 'TGG'
                 # Go upstream into the seed by 1 base
                 decision_path += "Mutating " + mutation_string + " to " + mutation + " will not distrupt the seed/PAM, so move further upstream. "
-
-                if complement:
-                    return perform_mutation(candidate_dna, -1, -1, mutant, null_mutation_loc + 1, decision_path,
-                                            complement=complement)
-                else:
-                    return perform_mutation(candidate_dna, -1, -1, mutant, null_mutation_loc - 1, decision_path, complement=complement)
+                return perform_mutation(candidate_dna, first_amino_acid_loc - 1, -1, mutant, decision_path,
+                             distance_from_pam=distance_from_pam + 1, complement=complement)
 
         return False, None, None, actual_mutation, decision_path
     # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -419,7 +394,7 @@ def perform_mutation(candidate_dna, first_amino_acid_loc, pam_case, mutant, null
             mutant[0] = '*'  # these two *s force any silent mutation
             mutant[1] = '*'
             decision_path += "Couldn't mutate the PAM, try to mutate in the seed. "
-            return perform_mutation(candidate_dna, first_amino_acid_loc - 3, 3, mutant, -1, decision_path,
+            return perform_mutation(candidate_dna, first_amino_acid_loc - 3, 3, mutant, decision_path,
                                     distance_from_pam=distance_from_pam + 3, down=down, complement=complement)
 
     if config.VERBOSE_EXECUTION:
@@ -448,7 +423,6 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
     UPSTREAM = (config.UP_ACIDS) * 3
     DOWNSTREAM = config.DOWN_ACIDS * 3
     order = 0
-    successful_mutations = []
     if complement:
         temp = UPSTREAM
         UPSTREAM = DOWNSTREAM
@@ -457,6 +431,7 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
 
     # 1c) Take the 20 bases upstream of the NGG and that is the guide.
     guide = create_guides(dna, pam, complement)
+    successful_mutations = []
 
     # If using the guide library, automatically reject any guide not present in the library
     if (config.USE_GUIDE_LIBRARY and not (is_guide_in_library(guide, guide_lib))):
@@ -490,7 +465,7 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
         first_amino_acid_loc = pam
         for i in range(0, 3):  # We want to start on the first amino acid that is within our upstream range
             if (pam - config.GENE_START_BUFFER + i) % 3 == 0:
-                first_amino_acid_loc = pam + i
+                first_amino_acid_loc = pam +  i
     while first_amino_acid_loc < config.GENE_START_BUFFER:  # ignore acids outside the gene
         first_amino_acid_loc += 3
     while first_amino_acid_loc >= len(dna) - config.GENE_END_BUFFER:  # ignore acids outside the gene
@@ -505,21 +480,19 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
     # Issue #25 - Kill off the pam but don’t make an original mutational
     # Up until here we did not perform original mutation, this section just performs mutation in the seed/pam
     # and returns, it doesn't go past this section.
-
     if (mutant[0] == 'NULL' and mutant[1] == 'NULL'):
-        decision_path += "NULL mutation is active, so only mutate in the PAM/seed region. "
+        first_amino_acid_loc = 76 # This is always true?
+        pam_string = candidate_dna[first_amino_acid_loc:first_amino_acid_loc + 3]
 
-        null_mutation_loc = 76
-        pam_string = candidate_dna[null_mutation_loc:null_mutation_loc + 3]
-        mutation_successful, temp_candidate_dna, d_pam, pam_mutation, decision_path = perform_mutation(candidate_dna,
-                -1, -1, mutant, null_mutation_loc, decision_path, complement=complement)
+        mutation_successful, temp_candidate_dna, d_pam, actual_mutation, decision_path = perform_mutation(candidate_dna,
+                                                                        first_amino_acid_loc,-1, mutant, decision_path)
 
         if not mutation_successful:
             return None
 
         candidate_dna = insert_extra_sequence(temp_candidate_dna, guide)
-        mutation_location = null_mutation_loc - d_pam
-        result = MutationTracker(0, null_mutation_loc + 72, mutant, mutation_location + 72, candidate_dna,
+        mutation_location = first_amino_acid_loc - d_pam
+        result = MutationTracker(0, first_amino_acid_loc + 72, mutant, mutation_location + 72, candidate_dna,
                                  complement, pam, d_pam, pam_string, decision_path)
 
         # prevent dups
@@ -530,9 +503,7 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
 
         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-
     # Setting up for multiple potentials
-
     candidate_dnas = []
     mutation_locations = []
     for ordering in range(2):
@@ -558,9 +529,8 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
                                                                                    candidate_first_amino_acid_loc:candidate_first_amino_acid_loc + 3] + " | " + candidate_dna[
                                                                                                                                                                 candidate_first_amino_acid_loc + 3:])
                 # 2)  Actually perform the mutation
-                mutation_successful, temp_candidate_dna, d_pam, actual_mutation, decision_path = perform_mutation(
-                    candidate_dna, candidate_first_amino_acid_loc, 0, mutant, -1, decision_path)
-
+                mutation_successful, temp_candidate_dna, d_pam, actual_mutation, decision_path = perform_mutation(candidate_dna,
+                                                                                  candidate_first_amino_acid_loc, 0, mutant, decision_path)
                 if config.TRACE_CANDIDATE_DNA_GENERATION:
                     print("Candidate DNA:")
                     print(temp_candidate_dna)
@@ -587,9 +557,8 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
                                                                                    candidate_first_amino_acid_loc:candidate_first_amino_acid_loc + 3] + " | " + candidate_dna[candidate_first_amino_acid_loc + 3:])
 
                 # 2)  Actually perform the mutation
-                mutation_successful, temp_candidate_dna, d_pam, actual_mutation, decision_path = perform_mutation(
-                    candidate_dna, candidate_first_amino_acid_loc, 0, mutant, -1, decision_path, complement=complement)
-
+                mutation_successful, temp_candidate_dna, d_pam, actual_mutation, decision_path = perform_mutation(candidate_dna,
+                                                                                  candidate_first_amino_acid_loc, 0, mutant, decision_path, complement=complement)
                 if config.TRACE_CANDIDATE_DNA_GENERATION:
                     print("Reverse:")
                     print(temp_candidate_dna)
@@ -607,6 +576,7 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
         return None
 
     # if we wrote over the pam already, we are fine, I think
+
     decision_path += "Now we try to mutate the PAM/Seed. "
     for i in range(len(candidate_dnas)):
         candidate_dna = candidate_dnas[i]
@@ -635,9 +605,9 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
 
                 pam_acid = string_to_acid[pam_string]
                 pam_mutant = [pam_acid, pam_acid]
-                mutation_successful, candidate_dna, d_pam, pam_mutation, decision_path = perform_mutation(candidate_dna, pam_loc_in_candidate,0,
-                                                                                                          pam_mutant, -1, decision_path,
-                                                                                                          mutation_location=mutation_location, complement=True)
+                mutation_successful, candidate_dna, d_pam, pam_mutation, decision_path = perform_mutation(candidate_dna, pam_loc_in_candidate, 0,
+                                                                             pam_mutant, decision_path,
+                                                                             mutation_location=mutation_location, complement=True)
                 if config.TRACE_CANDIDATE_DNA_GENERATION:
                     print("PAM Candidate DNA:")
                     print(temp_candidate_dna)
@@ -689,9 +659,10 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
                 if not replaceable_pam:
                     return None
                 if pam_mutant_up is not None:
-                    mutation_successful, temp_candidate_dna, d_pam, pam_mutation, decision_path = perform_mutation(candidate_dna, pam_loc_in_candidate - 1,
-                        pam_case, pam_mutant_up, -1, decision_path, mutation_location=mutation_location, complement=complement)
-
+                    mutation_successful, temp_candidate_dna, d_pam, pam_mutation, decision_path = perform_mutation(candidate_dna,
+                                                                                      pam_loc_in_candidate - 1,
+                                                                                      pam_case, pam_mutant_up, decision_path,
+                                                                                      mutation_location=mutation_location, complement=complement)
                     if config.TRACE_CANDIDATE_DNA_GENERATION:
                         print("PAM Candidate DNA 2:")
                         print(temp_candidate_dna)
@@ -709,9 +680,11 @@ def create_mutations(dna, pam, mutant, complement=False, only_once=False):
                     else:
                         offset = pam_case
 
-                    mutation_successful, temp_candidate_dna, d_pam, pam_mutation, decision_path = perform_mutation(candidate_dna, pam_loc_in_candidate + offset,
-                        pam_case, pam_mutant_down, -1, decision_path, mutation_location=mutation_location, complement=complement, down=True)
 
+                    mutation_successful, temp_candidate_dna, d_pam, pam_mutation, decision_path = perform_mutation(candidate_dna,
+                                                                                      pam_loc_in_candidate + offset,
+                                                                                      pam_case, pam_mutant_down, decision_path,
+                                                                                      mutation_location=mutation_location, complement=complement, down=True)
                     if mutation_successful:
                         candidate_dna = temp_candidate_dna
         else:
